@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MachineChannel 状态</title>
+<style>
+:root { --bg:#f4f4f6; --fg:#1d1d1f; --muted:#6e6e73; --card:#fff; --line:#dcdce0; --red:#c0392b; --red-bg:#fdecea;
+        --green:#1e8449; --green-bg:#e8f6ee; --amber:#b9770e; --amber-bg:#fdf3e1; --blue:#2471a3; --blue-bg:#eaf2fa; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161617; --fg:#f5f5f7; --muted:#a1a1a6; --card:#1f1f21; --line:#38383a;
+        --red:#ff6b5e; --red-bg:#3a1f1c; --green:#58d68d; --green-bg:#17301f; --amber:#f5b041; --amber-bg:#3a2f14; --blue:#5dade2; --blue-bg:#152a3a; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+header { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; padding:12px 20px; background:var(--card); border-bottom:1px solid var(--line); }
+h1 { font-size:18px; margin:0; } h2 { font-size:15px; margin:0 0 10px; }
+main { max-width:1500px; margin:0 auto; padding:18px 20px; display:grid; gap:16px; }
+.muted { color:var(--muted); font-size:13px; }
+.panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; overflow-x:auto; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+.tile { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 16px; }
+.tile b { display:block; font-size:26px; line-height:1.2; font-variant-numeric:tabular-nums; }
+.tile span { color:var(--muted); font-size:13px; } .tile small { display:block; color:var(--muted); font-size:12px; }
+.tile.green b { color:var(--green); } .tile.red b { color:var(--red); } .tile.amber b { color:var(--amber); } .tile.blue b { color:var(--blue); }
+table { border-collapse:collapse; width:100%; font-size:14px; font-variant-numeric:tabular-nums; }
+th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); vertical-align:top; white-space:nowrap; }
+th { color:var(--muted); font-weight:500; font-size:13px; } tr:last-child td { border-bottom:0; }
+td.wrap { white-space:normal; overflow-wrap:anywhere; max-width:420px; font:12px ui-monospace,Consolas,monospace; color:var(--muted); }
+.pill { display:inline-block; padding:1px 8px; border-radius:9px; font-size:12px; }
+.pill.ok { background:var(--green-bg); color:var(--green); } .pill.bad { background:var(--red-bg); color:var(--red); }
+.pill.warn { background:var(--amber-bg); color:var(--amber); } .pill.info { background:var(--blue-bg); color:var(--blue); }
+.dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--muted); margin-right:7px; }
+.dot.on { background:var(--green); } .dot.off { background:var(--red); }
+button, input, select { font:inherit; font-size:13px; color:inherit; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:4px 10px; }
+button { cursor:pointer; } button.go { background:var(--blue); color:#fff; border-color:var(--blue); } button:disabled { opacity:.5; cursor:default; }
+.row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.alert { border-color:var(--red); background:var(--red-bg); }
+.token { font:13px ui-monospace,Consolas,monospace; overflow-wrap:anywhere; padding:8px 10px; background:var(--bg); border-radius:8px; user-select:all; }
+.toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:var(--fg); color:var(--bg); padding:8px 16px; border-radius:8px; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; }
+.toast.show { opacity:.93; }
+.field { display:flex; flex-direction:column; gap:3px; } .field > span { color:var(--muted); font-size:12px; }
+.issue { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+.issue .row { align-items:flex-end; }
+.newkey { margin-top:12px; border:2px solid var(--red); background:var(--red-bg); border-radius:10px; padding:12px 14px; }
+.empty { padding:70px 20px; text-align:center; color:var(--muted); font-size:17px; }
+</style></head>
+<body>
+<header><h1>MachineChannel</h1><span class="muted">机器指令通道：只负责把指令送到机器、把回答带回来，不读指令内容</span>
+  <span style="flex:1"></span><span class="muted" id="read"></span><button id="forget">换一把钥匙</button></header>
+<main id="main"><div class="empty">加载中…</div></main>
+<div id="toast" class="toast"></div>
+<script>
+const CHANNEL = { url: "https://ziveajlinhmafqcweahx.supabase.co", key: "sb_publishable_WoafNUwm9EwmDfrrinrvbQ_iQlIQwsF" };
+const LITE = { revision: "005a40a9ccde", sha256: "00d811acfaca93e32ddba121dd720f68d9e6527a261c003948c4c05a99d6ec54" };   // the published lite.ps1 (scripts/publish_page.py)
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = v => Number(v || 0).toLocaleString("en-US");
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("show"), 3200); }
+function token() {
+  let t = ""; try { t = localStorage.getItem("mc_token") || ""; } catch (e) {}
+  if (!t) { t = (prompt("请输入通道的管理钥匙（mc_ 开头）") || "").trim(); try { if (t) localStorage.setItem("mc_token", t); } catch (e) {} }
+  return t;
+}
+async function rpc(name, args = {}) {
+  const r = await fetch(`${CHANNEL.url}/rest/v1/rpc/${name}`, { method: "POST",
+    headers: { "Content-Type": "application/json", apikey: CHANNEL.key }, body: JSON.stringify({ p_token: token(), ...args }) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (/unknown or revoked key|may not do this/.test(body.message || "")) { try { localStorage.removeItem("mc_token"); } catch (e) {} }
+    throw new Error({ "MachineChannel: unknown or revoked key": "钥匙不对，或者已经作废" }[body.message] || body.message || `请求失败（${r.status}）`);
+  }
+  return body;
+}
+const when = s => s ? new Date(s).toLocaleString("zh-CN", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+const ago = s => { if (!s) return "从未"; const sec = Math.round((Date.now() - new Date(s)) / 1000);
+  return sec < 90 ? sec + " 秒前" : sec < 5400 ? Math.round(sec / 60) + " 分钟前" : sec < 172800 ? Math.round(sec / 3600) + " 小时前" : Math.round(sec / 86400) + " 天前"; };
+const STATUS = { queued: ["等机器来取", "warn"], delivered: ["机器正在执行", "info"], done: ["完成", "ok"], error: ["没有成功", "bad"], expired: ["机器没来取，已作废", "bad"] };
+const KIND = { machine: "机器", app: "项目", admin: "管理" };
+const TYPE = { dtf: "DTF 生产机", uv: "UV 生产机", "3d": "3D 生产机", shop: "店铺机", none: "非生产机" };
+let shown = null;   // a key that was just issued: shown until dismissed, it cannot be read again
+// A shop computer runs the light end (lite.ps1), which has versions of its own: it is compared
+// with the published script, not with the agent's releases.
+const isLite = m => String((m.info || {}).agent || "").startsWith("lite-");
+const newest = (m, latest) => isLite(m) ? "lite-" + LITE.revision : latest;
+const current = (m, latest) => !!newest(m, latest) && (m.info || {}).agent === newest(m, latest);
+const agentName = m => { const a = String((m.info || {}).agent || ""); return a.startsWith("lite-") ? a.slice(0, 12) : a.slice(0, 7); };
+const site = () => location.origin + location.pathname.replace(/[^/]*$/, "");
+
+function html(d) {
+  const ms = d.machines, on = ms.filter(m => m.online), latest = (d.releases[0] || {}).revision || "";
+  const day = d.messages.filter(x => Date.now() - new Date(x.created_at) < 86400000);
+  const open = d.messages.filter(x => x.status === "queued" || x.status === "delivered").length;
+  const failed = day.filter(x => x.status === "error" || x.status === "expired").length;
+  const old = ms.filter(m => !m.key), behind = ms.filter(m => (m.info || {}).agent && newest(m, latest) && !current(m, latest));
+  const programs = [...new Set(ms.flatMap(m => (m.info || {}).apps || []))].filter(a => a !== "channel").sort();
+  const live = d.keys.filter(k => !k.revoked_at);
+  const tile = (cls, v, label, note) => `<div class="tile ${cls}"><b>${v}</b><span>${label}</span>${note ? `<small>${note}</small>` : ""}</div>`;
+  const mRow = m => { const i = m.info || {}, cur = current(m, latest);
+    return `<tr><td><span class="dot ${m.online ? "on" : "off"}"></span><b>${esc(m.label || "—")}</b> <button data-name="${esc(m.machine)}" data-label="${esc(m.label || "")}" title="改这台机器的名字">改名</button>
+        <span class="pill ${m.kind ? "info" : "warn"}">${TYPE[m.kind] || "没分类型"}</span> <button data-kind="${esc(m.machine)}" data-now="${esc(m.kind || "")}" title="改这台机器的类型">类型</button></td>
+      <td>${esc(m.machine)}</td><td>${m.online ? `<span class="pill ok">在线</span>` : `<span class="pill bad">离线</span> <span class="muted">${ago(m.seen_at)}</span>`}</td>
+      <td>${esc(agentName(m))} ${!i.agent ? "" : cur ? `<span class="pill ok">最新</span>` : newest(m, latest) ? `<span class="pill warn">旧版本</span>` : ""}</td>
+      <td>${(i.apps || []).map(a => `<span class="pill info">${esc(a)}${(i.versions || {})[a] ? " " + esc(i.versions[a]) : ""}</span>`).join(" ") || `<span class="muted">没有登记程序</span>`}${(i.running || []).length ? ` <span class="muted">正在执行 ${esc(i.running.join("、"))}</span>` : ""}</td>
+      <td>${m.key ? `<span class="pill ok">自己的钥匙</span> <span class="muted">${ago(m.key.last_used_at)}用过</span>` : `<span class="pill warn">还在用旧的共用钥匙</span>`}</td>
+      <td>${i.cpu != null ? Math.round(i.cpu) + "%" : "–"}</td><td>${i.gpu != null ? `${Math.round(i.gpu)}% · ${(i.vram_mb / 1024).toFixed(1)}/${Math.round(i.vram_total_mb / 1024)} GB · ${Math.round(i.temp)}°C` : "–"}</td>
+      <td>${num(m.today)}${m.waiting ? ` <span class="pill warn">${m.waiting} 条在等</span>` : ""}</td>
+      <td><button data-ping="${esc(m.machine)}" ${m.online ? "" : "disabled"}>问一声</button> <button data-update="${esc(m.machine)}" ${m.online && i.agent && newest(m, latest) && !cur ? "" : "disabled"}>更新通道程序</button></td></tr>`; };
+  const took = x => x.finished_at ? ((new Date(x.finished_at) - new Date(x.created_at)) / 1000).toFixed(0) + " 秒" : "";
+  const msgRow = x => `<tr><td>${when(x.created_at)}</td><td><b>${esc(x.label || "")}</b> <span class="muted">${esc(x.machine)}</span></td><td><span class="pill info">${esc(x.app)}</span></td>
+    <td class="wrap">${esc(x.body)}</td><td><span class="pill ${STATUS[x.status][1]}">${STATUS[x.status][0]}</span>${x.exit_code ? ` <span class="muted">退出码 ${x.exit_code}</span>` : ""}</td>
+    <td>${took(x)}</td><td class="wrap">${esc(x.reply || "")}</td><td>${esc(x.sender || "")}</td></tr>`;
+  const appRow = a => `<tr><td><span class="pill info">${esc(a.app)}</span></td><td>${num(a.messages)}</td><td>${num(a.done)}</td><td>${num(a.failed)}</td><td>${num(a.expired)}</td><td>${num(a.open)}</td>
+    <td>${ms.filter(m => a.app === "channel" || ((m.info || {}).apps || []).includes(a.app)).length} 台</td><td>${ago(a.last_at)}</td></tr>`;
+  const keyRow = k => `<tr><td><span class="pill ${k.kind === "admin" ? "bad" : k.kind === "app" ? "info" : "ok"}">${KIND[k.kind]}</span></td><td><b>${esc(k.name)}</b>${k.pending ? ` <span class="pill warn">待批准 ${esc(k.code)}</span>` : ""}</td><td class="muted">${esc(k.note || "")}</td>
+    <td>${when(k.created_at)}</td><td>${ago(k.last_used_at)}</td><td>${k.revoked_at ? `<span class="muted">已作废 ${when(k.revoked_at)}</span>` : `<button data-revoke="${k.id}" data-what="${esc(KIND[k.kind] + " " + k.name)}">作废</button>`}</td></tr>`;
+  const asking = d.keys.filter(k => k.pending && !k.revoked_at);
+  const alerts = [
+    ...asking.map(k => `<b>${esc(k.name)}</b> 申请加入通道（核对码 <b>${esc(k.code)}</b>，和那台电脑安装窗口里显示的一致才批准） · ${when(k.created_at)}
+      <button class="go" data-approve="${k.id}">批准</button> <button data-revoke="${k.id}" data-what="${esc(k.name + " 的加入申请")}">拒绝</button>`),
+    old.length ? `还有 <b>${old.length}</b> 台机器在用第一版的共用钥匙（${old.map(m => esc(m.label || m.machine)).join("、")}）。更新通道程序后，它会自动换成自己的钥匙。` : "",
+    failed ? `最近 24 小时有 <b>${failed}</b> 条指令没有成功或没被取走，见下面的指令记录。` : ""].filter(Boolean);
+  return `${alerts.length ? `<div class="panel alert"><h2>需要你看一下</h2>${alerts.map(a => `<div>${a}</div>`).join("")}</div>` : ""}
+    <div class="tiles">
+      ${tile("green", `${on.length}<span style="font-size:15px"> / ${ms.length} 台</span>`, "机器在线", `离线 ${ms.length - on.length} 台`)}
+      ${tile("", num(day.length), "最近 24 小时的指令", `${num(day.filter(x => x.status === "done").length)} 条完成`)}
+      ${tile(open ? "amber" : "", num(open), "正在路上的指令", "已发出，还没有回答")}
+      ${tile(failed ? "red" : "", num(failed), "没有成功的", "出错，或机器没来取")}
+      ${tile("blue", num(live.length), "有效的钥匙", `机器 ${live.filter(k => k.kind === "machine").length} · 项目 ${live.filter(k => k.kind === "app").length} · 管理 ${live.filter(k => k.kind === "admin").length}`)}
+      ${tile(behind.length ? "amber" : "", latest ? latest.slice(0, 7) : "–", "通道程序最新版本", (latest ? (behind.length ? `${behind.length} 台还没更新` : "所有机器都是最新") : "还没有发布过") + ` · 店铺机用的是 lite-${esc(LITE.revision.slice(0, 7))}`)}
+    </div>
+    <div class="panel"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">机器</h2><span class="muted">没事的机器每分钟报到一次，有指令时每 10 秒 · 名字是人叫的名字，发指令时名字和电脑名都认</span>
+        <span style="flex:1"></span><button class="go" id="updateAll" ${behind.filter(m => m.online).length ? "" : "disabled"}>在线的旧版本机器全部更新通道程序</button></div>
+      <table><tr><th>名字</th><th>电脑名</th><th>状态</th><th>通道程序</th><th>登记的程序</th><th>钥匙</th><th>CPU</th><th>显卡</th><th>24 小时指令</th><th></th></tr>${ms.map(mRow).join("")}</table></div>
+    <div class="panel"><h2>每一条指令 <span class="muted" style="font-weight:400">最近 ${d.messages.length} 条，最新的在前 · 内容和回答是各项目自己的，通道只是原样送达</span></h2>
+      ${d.messages.length ? `<table><tr><th>时间</th><th>机器</th><th>程序</th><th>内容</th><th>结果</th><th>用时</th><th>机器的回答</th><th>谁发的</th></tr>${d.messages.map(msgRow).join("")}</table>` : `<span class="muted">还没有指令</span>`}</div>
+    <div class="panel"><h2>各项目用了多少 <span class="muted" style="font-weight:400">最近 7 天 · “channel”是通道自己的问一声和更新</span></h2>
+      <table><tr><th>程序</th><th>指令</th><th>完成</th><th>出错</th><th>没被取走</th><th>在路上</th><th>装了它的机器</th><th>最近一次</th></tr>${d.apps.map(appRow).join("") || `<tr><td class="muted">暂无</td></tr>`}</table></div>
+    <div class="panel"><h2>钥匙 <span class="muted" style="font-weight:400">机器钥匙：只能替那一台机器报到和取指令 · 项目钥匙：只能给自己的程序发指令 · 管理钥匙：全部</span></h2>
+      <div class="issue"><div class="row">
+          <label class="field"><span>发哪一种</span><select id="newKind"><option value="app">项目钥匙（给一个程序的发送方）</option><option value="machine">机器钥匙（给一台电脑）</option><option value="admin">管理钥匙（给负责人）</option></select></label>
+          <label class="field" data-for="app"><span>程序名（不是机器名）</span><select id="newApp">${programs.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}<option value="">别的程序（还没有机器登记）…</option></select></label>
+          <label class="field" data-for="app" id="newAppOtherBox"><span>新程序名：小写英文，和机器上登记的一致</span><input id="newAppOther" placeholder="例如 ecomai" size="22"></label>
+          <label class="field" data-for="machine"><span>电脑名（那台电脑上 echo %COMPUTERNAME%）</span><input id="newName" placeholder="例如 HALOOPRINTER1" size="24"></label>
+          <label class="field" data-for="machine"><span>人叫它的名字</span><input id="newLabel" placeholder="例如 3D1" size="12"></label>
+          <label class="field" data-for="machine"><span>类型</span><select id="newType"><option value="">不分类型</option>${Object.entries(TYPE).map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></label>
+          <label class="field" data-for="admin"><span>给谁用</span><input id="newAdmin" placeholder="例如 负责人的手机" size="20"></label>
+          <label class="field"><span>备注（可不填）</span><input id="newNote" placeholder="放在哪、给谁用" size="20"></label>
+          <button class="go" id="issue">发一把新钥匙</button></div>
+        ${shown ? `<div class="newkey" id="newKey"><b>新钥匙：${esc(shown.what)}</b>（只显示这一次，请现在复制保存）<div class="token" style="margin-top:8px">${esc(shown.token)}</div>
+          ${shown.kind === "machine" && shown.type === "shop" ? `<div class="muted" style="margin-top:8px">在那台电脑上装通道（店铺机，不要管理员、不要 Python）：打开 PowerShell，运行这一行。</div>
+          <div class="token">powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:TEMP 'mc-lite.ps1'; Invoke-WebRequest '${esc(site())}lite.ps1' -UseBasicParsing -OutFile $f; &amp; $f -Token '${esc(shown.token)}'"</div>`
+          : shown.kind === "machine" ? `<div class="muted" style="margin-top:8px">在那台电脑上装通道（需要 Python 3.10 以上）：右键“以管理员身份运行”打开 PowerShell，运行这一行。带 -Remote 的意思是这台机器接受你的远程指令（程序名 remote）；在机器上运行 C:\MachineChannel\scripts\remote.ps1 off 就关掉，去掉 -Remote 则一开始就不开。</div>
+          <div class="token">powershell -ExecutionPolicy Bypass -Command "iwr ${esc(site())}bootstrap.ps1 -UseBasicParsing -OutFile $env:TEMP\\mc-bootstrap.ps1; &amp; $env:TEMP\\mc-bootstrap.ps1 -Token ${esc(shown.token)} -Remote"</div>` : ""}
+          <div class="row" style="margin-top:8px"><button class="go" id="copyKey">复制钥匙</button><button id="hideKey">我已保存，关掉</button><span class="muted">通道里只存了它的校验值，关掉之后谁也看不到原文，丢了只能作废重发。</span></div></div>` : ""}
+        <div class="muted" style="margin-top:8px" data-for="app">项目钥匙发给“往机器上的某个程序发指令的那一方”（例如 ecomai 的发版脚本）。程序名就是上面“机器”表里“登记的程序”一列的名字；填成机器名（如 LM）的钥匙什么也发不了。</div>
+        <div class="muted" style="margin-top:8px" data-for="machine">店铺机不用在这里发钥匙：在那台电脑上打开 PowerShell 运行下面这一行（把 SHOP1 换成给它起的名字，英文字母和数字），它会自己申请加入并显示一个核对码，然后在本页最上面点“批准”。这一行里没有任何钥匙，每台店铺机都用同一行。
+          <div class="token" style="margin-top:6px">powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:TEMP 'mc-lite.ps1'; Invoke-WebRequest '${esc(site())}lite.ps1' -UseBasicParsing -OutFile $f; &amp; $f -Name SHOP1"</div></div>
+        <div id="issueNote" class="muted" style="margin-top:6px"></div>
+</div>
+      <table><tr><th>种类</th><th>给谁</th><th>备注</th><th>发出时间</th><th>最近使用</th><th></th></tr>${d.keys.map(keyRow).join("")}</table></div>
+    <div class="panel"><h2>通道程序的版本</h2>
+      <table><tr><th>版本</th><th>校验值</th><th>大小</th><th>发布时间</th><th>在用的机器</th></tr>${d.releases.map(r => `<tr><td><b>${esc(r.revision.slice(0, 7))}</b></td><td class="wrap">${esc(r.sha256)}</td>
+        <td>${(r.bytes / 1024).toFixed(0)} KB</td><td>${when(r.published_at)}</td><td>${ms.filter(m => (m.info || {}).agent === r.revision).length} 台</td></tr>`).join("") || `<tr><td class="muted">还没有发布过</td></tr>`}</table></div>`;
+}
+
+let timer = null, data = null;
+async function refresh() {
+  clearTimeout(timer);
+  if (document.hidden) return;
+  try {
+    data = await rpc("mc_status", { p_messages: 100 });
+    const typed = {}, at = document.activeElement, focus = at && at.id && $("#main").contains(at) ? [at.id, at.selectionStart] : null;
+    document.querySelectorAll("#main input[id], #main select[id]").forEach(e => typed[e.id] = e.value);
+    $("#main").innerHTML = html(data);
+    for (const [id, v] of Object.entries(typed)) { const e = document.getElementById(id);
+      if (e && (e.tagName !== "SELECT" || [...e.options].some(o => o.value === v))) e.value = v; }
+    if (focus) { const e = document.getElementById(focus[0]); if (e) { e.focus(); try { e.setSelectionRange(focus[1], focus[1]); } catch (x) {} } }
+    $("#read").textContent = "读取于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false }) + " · 每 10 秒自动更新";
+    wire();
+  } catch (e) {
+    if (!data) $("#main").innerHTML = `<div class="empty">${esc(e.message)} <button onclick="refresh()">再试一次</button></div>`;
+    else toast("读取失败：" + e.message);
+  }
+  timer = setTimeout(refresh, 10000);
+}
+const act = async (label, fn) => { try { await fn(); toast(label); } catch (e) { toast(e.message); } refresh(); };
+function wire() {
+  const latest = (data.releases[0] || {});
+  document.querySelectorAll("button[data-name]").forEach(b => b.onclick = () => {
+    const v = prompt(`这台电脑（${b.dataset.name}）叫什么名字？例如 M3。留空 = 去掉名字。`, b.dataset.label);
+    if (v !== null) act("名字已改", () => rpc("mc_name", { p_machine: b.dataset.name, p_label: v }));
+  });
+  document.querySelectorAll("button[data-kind]").forEach(b => b.onclick = () => {
+    const v = prompt(`这台电脑（${b.dataset.kind}）是什么类型？填 dtf、uv、3d、shop（店铺机）或 none（非生产机）。留空 = 不分类型。`, b.dataset.now);
+    if (v !== null) act("类型已改", () => rpc("mc_kind", { p_machine: b.dataset.kind, p_kind: v.trim().toLowerCase() }));
+  });
+  document.querySelectorAll("button[data-ping]").forEach(b => b.onclick = () =>
+    act("已发出，回答会出现在指令记录里", () => rpc("mc_send", { p_machine: b.dataset.ping, p_app: "channel", p_body: { do: "ping" }, p_sender: "状态页" })));
+  const stale = data.machines.filter(m => m.online && (m.info || {}).agent && newest(m, latest.revision) && !current(m, latest.revision));
+  const update = name => { const m = data.machines.find(x => x.machine === name);   // each end is sent its own kind of version
+    return rpc("mc_send", { p_machine: name, p_app: "channel", p_ttl_seconds: 3600, p_sender: "状态页",
+      p_body: isLite(m) ? { do: "update", sha256: LITE.sha256 } : { do: "update", revision: latest.revision, sha256: latest.sha256 } }); };
+  document.querySelectorAll("button[data-update]").forEach(b => b.onclick = () => act("更新指令已发出", () => update(b.dataset.update)));
+  const all = $("#updateAll"); if (all) all.onclick = () => {
+    if (confirm("让所有在线的机器把通道程序更新到最新版本？每台几秒钟，期间各项目的程序不受影响。")) act("更新指令已发给所有在线的旧版本机器", () => Promise.all(stale.map(m => update(m.machine)))); };
+  document.querySelectorAll("button[data-approve]").forEach(b => b.onclick = () => act("已批准，这台机器下次报到就上线", () => rpc("mc_approve", { p_key_id: Number(b.dataset.approve) })));
+  document.querySelectorAll("button[data-revoke]").forEach(b => b.onclick = () => {
+    if (confirm(`作废“${b.dataset.what}”这把钥匙？用它的机器或项目马上就连不上通道，要重新发一把才行。`)) act("已作废", () => rpc("mc_revoke", { p_key_id: Number(b.dataset.revoke) })); });
+  const names = new Set(data.machines.flatMap(m => [m.machine, m.label]).filter(Boolean).map(n => n.toLowerCase()));
+  const liveApp = n => data.keys.filter(k => k.kind === "app" && !k.revoked_at && k.name === n).length;
+  const form = () => {   // only the fields of the chosen kind show
+    const kind = $("#newKind").value, app = $("#newApp").value || $("#newAppOther").value.trim();
+    document.querySelectorAll(".issue [data-for]").forEach(e => e.style.display = e.dataset.for === kind ? "" : "none");
+    if (kind === "app") $("#newAppOtherBox").style.display = $("#newApp").value ? "none" : "";
+    $("#issueNote").innerHTML = kind !== "app" || !app ? "" : names.has(app.toLowerCase()) ? `<span class="pill bad">“${esc(app)}”是一台机器的名字，不是程序名</span>`
+      : liveApp(app) ? `<span class="pill warn">${esc(app)} 已经有 ${liveApp(app)} 把有效的项目钥匙</span> 再发一把，旧的仍然有效；钥匙丢了才需要再发，发完把旧的作废。` : "";
+  };
+  ["#newKind", "#newApp", "#newAppOther"].forEach(q => { $(q).onchange = form; $(q).oninput = form; });
+  form();
+  $("#issue").onclick = async () => {
+    const kind = $("#newKind").value, note = $("#newNote").value.trim(), label = $("#newLabel").value.trim(), type = $("#newType").value;
+    const name = (kind === "app" ? $("#newApp").value || $("#newAppOther").value : kind === "machine" ? $("#newName").value : $("#newAdmin").value).trim();
+    if (!name) { toast(kind === "app" ? "先选或填程序名" : kind === "machine" ? "先填电脑名" : "先写给谁用"); return; }
+    if (kind === "app" && names.has(name.toLowerCase())) { toast(`“${name}”是一台机器的名字。项目钥匙要填程序名，例如 ecomai`); return; }
+    if (kind === "app" && liveApp(name) && !confirm(`${name} 已经有 ${liveApp(name)} 把有效的项目钥匙。再发一把？（旧的不会自动作废）`)) return;
+    try {
+      const token = kind === "machine"
+        ? await rpc("mc_enroll", { p_machine: name, p_label: label || null, p_kind: type || null, p_note: note || null })
+        : await rpc("mc_issue", { p_kind: kind, p_name: name, p_note: note || null });
+      shown = { token, what: KIND[kind] + "钥匙 " + (label ? `${label}（${name}）` : name), kind, type };
+    } catch (e) { toast(e.message); return; }
+    await refresh();
+    const k = $("#newKey"); if (k) k.scrollIntoView({ block: "center" });
+  };
+  const c = $("#copyKey"); if (c) c.onclick = () => navigator.clipboard.writeText(shown.token).then(() => toast("已复制"), () => toast("复制不了，请手动选中"));
+  const h = $("#hideKey"); if (h) h.onclick = () => { shown = null; refresh(); };
+}
+$("#forget").onclick = () => { try { localStorage.removeItem("mc_token"); } catch (e) {} data = null; refresh(); };
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+refresh();
+</script></body></html>
