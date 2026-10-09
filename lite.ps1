@@ -12,7 +12,7 @@
 #   remove:                              lite.ps1 -Uninstall
 #
 # What it carries out (and nothing else: it starts no program a message names):
-#   app "ecomai"   {"do": "status"}                              the browser extension's version here
+#   app "halooai"  {"do": "status"}                              the browser extension's version here
 #                  {"do": "update", "version", "sha256", "url"}  fetch that package, check it, put its
 #                                                                files into the extension's folder
 #                                                                (manifest.json last: the extension
@@ -29,7 +29,7 @@ param(
     [string]$Name = "",
     [ValidateSet("shop", "none")][string]$Kind = "shop",
     [string]$Dir = (Join-Path $env:LOCALAPPDATA "MachineChannelLite"),
-    [string]$Extension = (Join-Path $env:LOCALAPPDATA "ImageGrab"),
+    [string]$Extension = (Join-Path $env:LOCALAPPDATA "HalooAIAssistant"),
     [int]$EveryMinutes = 10,
     [string]$TaskName = "MachineChannelLite",
     [switch]$NoTask,
@@ -39,7 +39,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Channel = @{ url = "https://ziveajlinhmafqcweahx.supabase.co"; key = "sb_publishable_WoafNUwm9EwmDfrrinrvbQ_iQlIQwsF"; script = "https://beijijizhou.github.io/machinechannel-status/lite.ps1" }
-$Revision = "f92054ade229"
+$Revision = "936409ab4536"
 $plain = New-Object Text.UTF8Encoding $false
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -129,13 +129,13 @@ function UpdateSelf($body) {
 
 function Carry($message) {
     $body = $message.body
-    if ($message.app -eq "ecomai") {
+    if ($message.app -eq "halooai") {
         if ($body.do -eq "status") { return @{ version = (ExtensionVersion); folder = $Extension; agent = $Revision } }
         if ($body.do -eq "update") { $done = UpdateExtension $body; WritePass; return $done }
-        throw 'ecomai knows "status" and "update"'
+        throw 'halooai knows "status" and "update"'
     }
     if ($message.app -eq "channel") {
-        if ($body.do -eq "ping") { return @{ pong = $script:Machine; agent = "lite-$Revision"; ecomai = (ExtensionVersion) } }
+        if ($body.do -eq "ping") { return @{ pong = $script:Machine; agent = "lite-$Revision"; halooai = (ExtensionVersion) } }
         if ($body.do -eq "update") { return (UpdateSelf $body) }
         throw 'the light end of the channel knows "ping" and "update"'
     }
@@ -143,7 +143,7 @@ function Carry($message) {
 }
 
 function Beat([bool]$take = $true) {
-    $info = @{ agent = "lite-$Revision"; apps = @("ecomai"); beat = $EveryMinutes * 60; versions = @{ ecomai = (ExtensionVersion) }; user = $env:USERNAME }
+    $info = @{ agent = "lite-$Revision"; apps = @("halooai"); beat = $EveryMinutes * 60; versions = @{ halooai = (ExtensionVersion) }; user = $env:USERNAME }
     $answer = Rpc "mc_beat" @{ p_info = $info; p_take = $take }
     $script:Machine = "$($answer.machine)"
     $script:Label = "$($answer.label)"

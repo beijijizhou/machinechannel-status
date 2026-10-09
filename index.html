@@ -47,7 +47,7 @@ button { cursor:pointer; } button.go { background:var(--blue); color:#fff; borde
 <div id="toast" class="toast"></div>
 <script>
 const CHANNEL = { url: "https://ziveajlinhmafqcweahx.supabase.co", key: "sb_publishable_WoafNUwm9EwmDfrrinrvbQ_iQlIQwsF" };
-const LITE = { revision: "f92054ade229", sha256: "23196a83bc96652e56a2eb5a29e4928ada3305d796536a24ccd6b926ed14e075" };   // the published lite.ps1 (scripts/publish_page.py)
+const LITE = { revision: "936409ab4536", sha256: "f5797a05a256163143a8aea97dd85d7b4092f932ceb12e621554a26556bd7a87" };   // the published lite.ps1 (scripts/publish_page.py)
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const num = v => Number(v || 0).toLocaleString("en-US");
@@ -135,7 +135,7 @@ function html(d) {
       <div class="issue"><div class="row">
           <label class="field"><span>发哪一种</span><select id="newKind"><option value="app">项目钥匙（给一个程序的发送方）</option><option value="machine">机器钥匙（给一台电脑）</option><option value="admin">管理钥匙（给负责人）</option></select></label>
           <label class="field" data-for="app"><span>程序名（不是机器名）</span><select id="newApp">${programs.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}<option value="">别的程序（还没有机器登记）…</option></select></label>
-          <label class="field" data-for="app" id="newAppOtherBox"><span>新程序名：小写英文，和机器上登记的一致</span><input id="newAppOther" placeholder="例如 ecomai" size="22"></label>
+          <label class="field" data-for="app" id="newAppOtherBox"><span>新程序名：小写英文，和机器上登记的一致</span><input id="newAppOther" placeholder="例如 halooai" size="22"></label>
           <label class="field" data-for="machine"><span>电脑名（那台电脑上 echo %COMPUTERNAME%）</span><input id="newName" placeholder="例如 HALOOPRINTER1" size="24"></label>
           <label class="field" data-for="machine"><span>人叫它的名字</span><input id="newLabel" placeholder="例如 3D1" size="12"></label>
           <label class="field" data-for="machine"><span>类型</span><select id="newType"><option value="">不分类型</option>${Object.entries(TYPE).map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></label>
@@ -148,7 +148,7 @@ function html(d) {
           : shown.kind === "machine" ? `<div class="muted" style="margin-top:8px">在那台电脑上装通道（需要 Python 3.10 以上）：右键“以管理员身份运行”打开 PowerShell，运行这一行。带 -Remote 的意思是这台机器接受你的远程指令（程序名 remote）；在机器上运行 C:\MachineChannel\scripts\remote.ps1 off 就关掉，去掉 -Remote 则一开始就不开。</div>
           <div class="token">powershell -ExecutionPolicy Bypass -Command "iwr ${esc(site())}bootstrap.ps1 -UseBasicParsing -OutFile $env:TEMP\\mc-bootstrap.ps1; &amp; $env:TEMP\\mc-bootstrap.ps1 -Token ${esc(shown.token)} -Remote"</div>` : ""}
           <div class="row" style="margin-top:8px"><button class="go" id="copyKey">复制钥匙</button><button id="hideKey">我已保存，关掉</button><span class="muted">通道里只存了它的校验值，关掉之后谁也看不到原文，丢了只能作废重发。</span></div></div>` : ""}
-        <div class="muted" style="margin-top:8px" data-for="app">项目钥匙发给“往机器上的某个程序发指令的那一方”（例如 ecomai 的发版脚本）。程序名就是上面“机器”表里“登记的程序”一列的名字；填成机器名（如 LM）的钥匙什么也发不了。</div>
+        <div class="muted" style="margin-top:8px" data-for="app">项目钥匙发给“往机器上的某个程序发指令的那一方”（例如 halooai 的发版脚本）。程序名就是上面“机器”表里“登记的程序”一列的名字；填成机器名（如 LM）的钥匙什么也发不了。</div>
         <div class="muted" style="margin-top:8px" data-for="machine">店铺机不用在这里发钥匙：在那台电脑上打开 PowerShell 运行下面这一行（把 SHOP1 换成给它起的名字，英文字母和数字），它会自己申请加入并显示一个核对码，然后在本页最上面点“批准”。这一行里没有任何钥匙，每台店铺机都用同一行。
           <div class="token" style="margin-top:6px">powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:TEMP 'mc-lite.ps1'; Invoke-WebRequest '${esc(site())}lite.ps1' -UseBasicParsing -OutFile $f; &amp; $f -Name SHOP1"</div></div>
         <div id="issueNote" class="muted" style="margin-top:6px"></div>
@@ -217,7 +217,7 @@ function wire() {
     const kind = $("#newKind").value, note = $("#newNote").value.trim(), label = $("#newLabel").value.trim(), type = $("#newType").value;
     const name = (kind === "app" ? $("#newApp").value || $("#newAppOther").value : kind === "machine" ? $("#newName").value : $("#newAdmin").value).trim();
     if (!name) { toast(kind === "app" ? "先选或填程序名" : kind === "machine" ? "先填电脑名" : "先写给谁用"); return; }
-    if (kind === "app" && names.has(name.toLowerCase())) { toast(`“${name}”是一台机器的名字。项目钥匙要填程序名，例如 ecomai`); return; }
+    if (kind === "app" && names.has(name.toLowerCase())) { toast(`“${name}”是一台机器的名字。项目钥匙要填程序名，例如 halooai`); return; }
     if (kind === "app" && liveApp(name) && !confirm(`${name} 已经有 ${liveApp(name)} 把有效的项目钥匙。再发一把？（旧的不会自动作废）`)) return;
     try {
       const token = kind === "machine"
