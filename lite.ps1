@@ -10,8 +10,9 @@
 #     lite.ps1 -Token mc_...          a key the channel's owner issued for this one computer
 #   every run after that is the task's:  lite.ps1
 #   remove:                              lite.ps1 -Uninstall
+#   the owner's commands on this computer: lite.ps1 -Remote on | off | status   (off unless turned on here)
 #
-# What it carries out (and nothing else: it starts no program a message names):
+# What it carries out (and nothing else: it starts no program a message names - but see "remote"):
 #   app "halooai"  {"do": "status"}                              the browser extension's version here
 #                  {"do": "update", "version", "sha256", "url"}  fetch that package, check it, put its
 #                                                                files into the extension's folder
@@ -19,6 +20,13 @@
 #                                                                reloads itself when it changes)
 #   app "channel"  {"do": "ping"}
 #                  {"do": "update", "sha256"}                    replace this script with the published one
+#   app "remote"   {"command", "shell": "powershell"|"cmd", "timeout_s"}   the owner's hands on this computer:
+#                  runs the command as the person the task runs as and answers what it printed. Only
+#                  on a computer where someone sat down and ran "lite.ps1 -Remote on" (a file here,
+#                  remote.on); no message can turn it on. The channel takes messages for "remote" from
+#                  the admin key (or a key issued for the app "remote") and from nobody else. A command
+#                  is carried out when this script next runs: within ten minutes, or at once when the
+#                  browser is told to look (mc-push with p_machine).
 #
 # It also keeps machine.json in the extension's folder: {"pass", "machine", "label"}. The pass is
 # worked out from this computer's key and is not the key: a service the extension talks to shows
@@ -33,6 +41,7 @@ param(
     [int]$EveryMinutes = 10,
     [string]$TaskName = "MachineChannelLite",
     [switch]$NoTask,
+    [ValidateSet("", "on", "off", "status")][string]$Remote = "",   # the switch of the app "remote", thrown at this computer only
     [switch]$Native,      # started by Chrome for the extension (native messaging): one run now instead of at the next ten minutes
     [switch]$Uninstall
 )
@@ -40,7 +49,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Channel = @{ url = "https://ziveajlinhmafqcweahx.supabase.co"; key = "sb_publishable_WoafNUwm9EwmDfrrinrvbQ_iQlIQwsF"; script = "https://beijijizhou.github.io/machinechannel-status/lite.ps1" }
-$Revision = "a00bb717dab7"
+$Revision = "ca2a508541b7"
 $plain = New-Object Text.UTF8Encoding $false
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -219,8 +228,55 @@ function UpdateSelf($body) {
     return @{ updated = $true; note = "the next run uses it" }
 }
 
+# ---- the app "remote" ----------------------------------------------------------------------------
+function RemoteOn { return (Test-Path -LiteralPath (Join-Path $Dir "remote.on")) }
+
+# The command goes into a file of its own (never onto a command line) and what it prints into
+# another: nothing is read through a pipe, so a program the command leaves running does not keep
+# this run waiting. Stopped when it takes longer than asked (10 minutes unless said, 15 at most:
+# the task itself is ended after 20).
+function RunRemote($body) {
+    $command, $shell = "$($body.command)", "$($body.shell)"
+    if (-not $shell) { $shell = "powershell" }
+    if (-not $command.Trim() -or $shell -notin @("powershell", "cmd")) { throw 'remote needs "command" (text) and "shell": "powershell" (the default) or "cmd"' }
+    $seconds = 600; try { if ($body.timeout_s) { $seconds = [int]$body.timeout_s } } catch { }
+    $seconds = [Math]::Max(5, [Math]::Min($seconds, 900))
+    $folder = Join-Path $Dir "remote"
+    New-Item -ItemType Directory -Force $folder | Out-Null
+    $base = Join-Path $folder ([DateTime]::UtcNow.Ticks)
+    $out, $err = "$base.out", "$base.err"
+    try {
+        if ($shell -eq "powershell") {
+            $file = "$base.ps1"   # with a byte order mark, or Windows PowerShell reads it in the computer's own code page
+            [IO.File]::WriteAllText($file, "[Console]::OutputEncoding = [Text.Encoding]::UTF8`r`n" + $command, (New-Object Text.UTF8Encoding $true))
+            $exe, $arguments = "powershell.exe", "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""$file"""
+        } else {
+            $file = "$base.cmd"
+            [IO.File]::WriteAllText($file, "@echo off`r`nchcp 65001 >nul`r`n" + $command, $plain)
+            $exe, $arguments = "cmd.exe", "/d /c ""$file"""
+        }
+        $p = Start-Process -FilePath $exe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+        $null = $p.Handle   # or Windows PowerShell forgets the exit code
+        $late = -not $p.WaitForExit($seconds * 1000)
+        if ($late) { try { & taskkill.exe /PID $p.Id /T /F 2>$null | Out-Null } catch { } }
+        $text = ""
+        foreach ($f in @($out, $err)) { try { $text += [IO.File]::ReadAllText($f, [Text.Encoding]::UTF8) } catch { } }
+        if ($text.Length -gt 60000) { $text = $text.Substring($text.Length - 60000) }
+        $exit = 1; if (-not $late) { $exit = $p.ExitCode }
+        if ($late) { $text = ($text.Trim() + "`n(the command did not finish in $seconds s and was stopped)").Trim() }
+        return @{ exit = $exit; output = $text.Trim() }
+    } finally {   # the command may have carried something that should not lie around
+        foreach ($f in @("$base.ps1", "$base.cmd", $out, $err)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Carry($message) {
     $body = $message.body
+    if ($message.app -eq "remote" -and (RemoteOn)) {
+        $ran = RunRemote $body
+        if ($ran.exit -ne 0) { throw "exit $($ran.exit)`n$($ran.output)" }
+        return $ran.output
+    }
     if ($message.app -eq "halooai") {
         if ($body.do -eq "status") { return @{ version = (ExtensionVersion); folder = $Extension; agent = $Revision } }
         if ($body.do -eq "update") { $done = UpdateExtension $body; WritePass; return $done }
@@ -235,7 +291,8 @@ function Carry($message) {
 }
 
 function Beat([bool]$take = $true) {
-    $info = @{ agent = "lite-$Revision"; apps = @("halooai"); beat = $EveryMinutes * 60; versions = @{ halooai = (ExtensionVersion) }; user = $env:USERNAME }
+    $apps = @("halooai"); if (RemoteOn) { $apps += "remote" }
+    $info = @{ agent = "lite-$Revision"; apps = $apps; beat = $EveryMinutes * 60; versions = @{ halooai = (ExtensionVersion) }; user = $env:USERNAME }
     EnterNative
     if ($script:NativeIds) { $info["native"] = @($script:NativeIds) }   # which extensions may start this script: for the owner to see
     $push = PushAddress
@@ -251,6 +308,16 @@ function Beat([bool]$take = $true) {
 if ($Uninstall) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host "The channel's task is removed. The extension's folder ($Extension) is left as it is."
+    exit 0
+}
+
+# ---- the switch of the app "remote", at this computer ---------------------------------------------
+if ($Remote) {
+    $mark = Join-Path $Dir "remote.on"
+    if ($Remote -eq "on") { New-Item -ItemType Directory -Force $Dir | Out-Null; [IO.File]::WriteAllText($mark, "turned on $(Get-Date -Format s) by $env:USERNAME", $plain) }
+    if ($Remote -eq "off") { Remove-Item -LiteralPath $mark -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $mark) { Write-Host "remote: on  (this computer carries out the owner's commands; the channel knows within $EveryMinutes minutes)" }
+    else { Write-Host "remote: off (no command is carried out; turn on with: lite.ps1 -Remote on)" }
     exit 0
 }
 
@@ -328,9 +395,11 @@ try {
         if (-not $messages.Count) { break }
         if ($Native) { Note "started by the extension: $($messages.Count) waiting" }
         foreach ($message in ($messages | Sort-Object id)) {
-            try { $status = "done"; $reply = (Carry $message | ConvertTo-Json -Compress); $code = 0 }
+            try { $status = "done"; $done = Carry $message; $code = 0
+                  if ($done -is [string]) { $reply = $done } else { $reply = ($done | ConvertTo-Json -Compress) } }
             catch { $status = "error"; $reply = "$($_.Exception.Message)"; $code = 1 }
-            Note "message $($message.id) $($message.app) $($message.body.do): $status $reply"
+            $short = "$reply"; if ($short.Length -gt 300) { $short = $short.Substring(0, 300) + "..." }
+            Note "message $($message.id) $($message.app) $($message.body.do): $status $short"
             Rpc "mc_answer" @{ p_id = $message.id; p_status = $status; p_reply = $reply; p_exit_code = $code } | Out-Null
         }
         NativeWrite @{ version = (ExtensionVersion); agent = "lite-$Revision"; carried = $messages.Count }   # the extension need not wait for the look after
