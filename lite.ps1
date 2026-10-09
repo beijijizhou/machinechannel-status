@@ -19,6 +19,11 @@
 #                                                                reloads itself when it changes)
 #   app "channel"  {"do": "ping"}
 #                  {"do": "update", "sha256"}                    replace this script with the published one
+#
+# It also keeps machine.json in the extension's folder: {"pass", "machine", "label"}. The pass is
+# worked out from this computer's key and is not the key: a service the extension talks to shows
+# it to the channel (mc_whoami) to learn that this is a computer the owner approved. It opens
+# nothing of the channel, and stops being accepted when the computer's key is revoked.
 param(
     [string]$Token = "",
     [string]$Name = "",
@@ -34,7 +39,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Channel = @{ url = "https://ziveajlinhmafqcweahx.supabase.co"; key = "sb_publishable_WoafNUwm9EwmDfrrinrvbQ_iQlIQwsF"; script = "https://beijijizhou.github.io/machinechannel-status/lite.ps1" }
-$Revision = "005a40a9ccde"
+$Revision = "f92054ade229"
 $plain = New-Object Text.UTF8Encoding $false
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -72,6 +77,20 @@ function Fetch([string]$url, [int]$seconds) {   # to a file and back: the bytes 
 
 function ExtensionVersion {
     try { return "$((Get-Content -LiteralPath (Join-Path $Extension 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version)" } catch { return "" }
+}
+
+# Written only when it would differ: the extension reads it every minute.
+function WritePass {
+    try {
+        if (-not $script:Machine -or -not (Test-Path -LiteralPath $Extension -PathType Container)) { return }
+        $inner = Sha256 ([Text.Encoding]::UTF8.GetBytes($script:Key))
+        $pass = "mcp_" + (Sha256 ([Text.Encoding]::UTF8.GetBytes("machinechannel-pass:$inner")))
+        $label = $null; if ($script:Label) { $label = $script:Label }
+        $text = ([ordered]@{ pass = $pass; machine = $script:Machine; label = $label } | ConvertTo-Json -Compress)
+        $file = Join-Path $Extension "machine.json"
+        $now = ""; try { $now = [IO.File]::ReadAllText($file) } catch { }
+        if ($now -ne $text) { [IO.File]::WriteAllText($file, $text, $plain) }
+    } catch { }
 }
 
 function UpdateExtension($body) {
@@ -112,7 +131,7 @@ function Carry($message) {
     $body = $message.body
     if ($message.app -eq "ecomai") {
         if ($body.do -eq "status") { return @{ version = (ExtensionVersion); folder = $Extension; agent = $Revision } }
-        if ($body.do -eq "update") { return (UpdateExtension $body) }
+        if ($body.do -eq "update") { $done = UpdateExtension $body; WritePass; return $done }
         throw 'ecomai knows "status" and "update"'
     }
     if ($message.app -eq "channel") {
@@ -127,6 +146,8 @@ function Beat([bool]$take = $true) {
     $info = @{ agent = "lite-$Revision"; apps = @("ecomai"); beat = $EveryMinutes * 60; versions = @{ ecomai = (ExtensionVersion) }; user = $env:USERNAME }
     $answer = Rpc "mc_beat" @{ p_info = $info; p_take = $take }
     $script:Machine = "$($answer.machine)"
+    $script:Label = "$($answer.label)"
+    WritePass
     return @($answer.messages)
 }
 
