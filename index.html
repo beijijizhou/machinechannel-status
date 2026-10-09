@@ -74,6 +74,45 @@ const STATUS = { queued: ["等机器来取", "warn"], delivered: ["机器正在�
 const KIND = { machine: "机器", app: "项目", admin: "管理" };
 const TYPE = { dtf: "DTF 生产机", uv: "UV 生产机", "3d": "3D 生产机", shop: "店铺机", none: "非生产机" };
 let shown = null;   // a key that was just issued: shown until dismissed, it cannot be read again
+// Standing orders (an app's release) and how each app's next one starts out: read when the page
+// opens, after each step taken here and when asked - not with every ten seconds' reading.
+let orders = null, ordersAt = null;
+const versionOf = body => body ? esc(body.version || JSON.stringify(body).slice(0, 60)) : "–";
+function releases(d) {
+  if (!orders) return `<div class="panel"><h2>发版</h2><span class="muted">读取中…</span></div>`;
+  const set = Object.fromEntries(orders.rollout.map(r => [r.app, r]));
+  const apps = [...new Set([...orders.orders.map(o => o.app), ...orders.rollout.map(r => r.app),
+    ...d.machines.flatMap(m => (m.info || {}).apps || [])])].filter(a => !["channel", "remote"].includes(a)).sort();
+  const row = o => { const ms = o.machines, has = ms.filter(m => m.handed).length, there = ms.filter(m => m.version && m.version === (o.body || {}).version).length,
+      waiting = ms.filter(m => m.in_share && !m.handed), held = ms.filter(m => !m.in_share && !m.handed);
+    const wider = [25, 50, 100].filter(n => n > o.share && held.length);
+    return `<tr><td><b>${esc(o.app)}</b></td><td><b>${versionOf(o.body)}</b><div class="muted">${esc(o.sender || "")} · ${when(o.created_at)}</div></td>
+      <td>${o.share >= 100 ? "全部机器" : `${o.share}%`}${o.first.length ? `<div class="muted">先发：${o.first.map(esc).join("、")}</div>` : ""}</td>
+      <td>${has} / ${ms.length} 台已领${there !== has ? `，${there} 台已是这一版` : ""}
+        ${waiting.length ? `<div class="muted">等它们上线：${waiting.map(m => esc(m.label || m.machine)).join("、")}</div>` : ""}
+        ${held.length ? `<div class="muted">还没放到：${held.length} 台</div>` : ""}</td>
+      <td>${o.previous ? versionOf(o.previous) : `<span class="muted">没有</span>`}</td>
+      <td>${wider.map(n => `<button class="go" data-widen="${esc(o.app)}" data-share="${n}">放到 ${n === 100 ? "全部" : n + "%"}</button>`).join(" ")}
+        ${o.share > 0 && held.length ? `<button data-widen="${esc(o.app)}" data-share="0">先不往下发</button>` : ""}
+        ${o.previous ? `<button data-back="${esc(o.app)}" data-to="${versionOf(o.previous)}" data-from="${versionOf(o.body)}">退回上一版</button>` : ""}</td></tr>`; };
+  return `<div class="panel"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">发版</h2>
+      <span class="muted">各项目公布的“每台机器应有的版本” · 先发给谁、放到多少、退回都在这里定 · 读取于 ${ordersAt || ""}</span>
+      <span style="flex:1"></span><button id="ordersNow">重新读取</button></div>
+    <table><tr><th>程序</th><th>现在公布的</th><th>放到了</th><th>机器</th><th>上一版</th><th></th></tr>
+      ${orders.orders.map(row).join("") || `<tr><td class="muted" colspan="6">现在没有公布任何版本</td></tr>`}</table>
+    <div class="muted" style="margin:12px 0 6px">下一次发版从哪里开始（每个程序各设一次，之后每次发版都照这个开始）</div>
+    <table><tr><th>程序</th><th>先发给</th><th>再加上其余机器的</th><th></th></tr>${apps.map(a => { const r = set[a] || { share: 100, first: [] };
+      return `<tr><td><b>${esc(a)}</b></td><td>${r.first.length ? r.first.map(esc).join("、") : `<span class="muted">不指定</span>`}</td>
+        <td>${r.share >= 100 ? "全部（一次发给所有机器）" : r.share + "%"}</td>
+        <td><button data-rollout="${esc(a)}" data-share="${r.share}" data-first="${esc(r.first.join(","))}">改</button></td></tr>`; }).join("")}</table></div>`;
+}
+async function readOrders() {
+  try { orders = await rpc("mc_orders"); ordersAt = new Date().toLocaleTimeString("zh-CN", { hour12: false }); }
+  catch (e) { if (!orders) orders = { orders: [], rollout: [] }; toast("发版读取失败：" + e.message); }
+}
+// The machines an order has just been let out to are told to look now (the channel's function mc-push).
+const pushNow = app => fetch(`${CHANNEL.url}/functions/v1/mc-push`, { method: "POST", headers: { "Content-Type": "application/json", apikey: CHANNEL.key },
+  body: JSON.stringify({ p_token: token(), p_app: app }) }).then(r => r.json()).catch(() => ({}));
 // A shop computer runs the light end (lite.ps1), which has versions of its own: it is compared
 // with the published script, not with the agent's releases.
 const isLite = m => String((m.info || {}).agent || "").startsWith("lite-");
@@ -127,6 +166,7 @@ function html(d) {
     <div class="panel"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">机器</h2><span class="muted">没事的机器每分钟报到一次，有指令时每 10 秒 · 名字是人叫的名字，发指令时名字和电脑名都认</span>
         <span style="flex:1"></span><button class="go" id="updateAll" ${behind.filter(m => m.online).length ? "" : "disabled"}>在线的旧版本机器全部更新通道程序</button></div>
       <table><tr><th>名字</th><th>电脑名</th><th>状态</th><th>通道程序</th><th>登记的程序</th><th>钥匙</th><th>CPU</th><th>显卡</th><th>24 小时指令</th><th></th></tr>${ms.map(mRow).join("")}</table></div>
+    ${releases(d)}
     <div class="panel"><h2>每一条指令 <span class="muted" style="font-weight:400">最近 ${d.messages.length} 条，最新的在前 · 内容和回答是各项目自己的，通道只是原样送达</span></h2>
       ${d.messages.length ? `<table><tr><th>时间</th><th>机器</th><th>程序</th><th>内容</th><th>结果</th><th>用时</th><th>机器的回答</th><th>谁发的</th></tr>${d.messages.map(msgRow).join("")}</table>` : `<span class="muted">还没有指令</span>`}</div>
     <div class="panel"><h2>各项目用了多少 <span class="muted" style="font-weight:400">最近 7 天 · “channel”是通道自己的问一声和更新</span></h2>
@@ -165,6 +205,7 @@ async function refresh() {
   if (document.hidden) return;
   try {
     data = await rpc("mc_status", { p_messages: 100 });
+    if (!orders) await readOrders();
     const typed = {}, at = document.activeElement, focus = at && at.id && $("#main").contains(at) ? [at.id, at.selectionStart] : null;
     document.querySelectorAll("#main input[id], #main select[id]").forEach(e => typed[e.id] = e.value);
     $("#main").innerHTML = html(data);
@@ -182,6 +223,24 @@ async function refresh() {
 const act = async (label, fn) => { try { await fn(); toast(label); } catch (e) { toast(e.message); } refresh(); };
 function wire() {
   const latest = (data.releases[0] || {});
+  const step = async (label, fn, app) => { try { await fn(); const p = app ? await pushNow(app) : null;
+      toast(label + (p && p.due ? `，已通知 ${p.sent} / ${p.due} 台马上来取` : "")); } catch (e) { toast(e.message); }
+    await readOrders(); refresh(); };
+  const again = $("#ordersNow"); if (again) again.onclick = () => step("已重新读取", async () => {});
+  document.querySelectorAll("button[data-widen]").forEach(b => b.onclick = () => { const n = Number(b.dataset.share), app = b.dataset.widen;
+    if (confirm(n ? `把 ${app} 现在公布的版本放到${n === 100 ? "全部机器" : " " + n + "% 的机器"}？已经领过的不会重领。` : `${app} 现在公布的版本先不再往下发？已经领到的机器不受影响，指定先发的机器仍会领。`))
+      step(n ? "已放量" : "已停在这里", () => rpc("mc_widen", { p_app: app, p_share: n }), n ? app : null); });
+  document.querySelectorAll("button[data-back]").forEach(b => b.onclick = () => { const app = b.dataset.back;
+    if (confirm(`把 ${app} 从 ${b.dataset.from} 退回 ${b.dataset.to}？所有机器都会领到 ${b.dataset.to}（已经是它的机器什么也不做）。`))
+      step("已退回", () => rpc("mc_back", { p_app: app, p_sender: "状态页" }), app); });
+  document.querySelectorAll("button[data-rollout]").forEach(b => b.onclick = () => { const app = b.dataset.rollout;
+    const first = prompt(`${app} 每次发版先发给哪些机器？填机器的名字，用逗号分开，例如 SHOP1。留空 = 不指定。`, b.dataset.first);
+    if (first === null) return;
+    const share = prompt(`除了上面这些，再同时发给其余机器的百分之几？0 = 只发给上面这些，100 = 一次发给所有机器。`, b.dataset.share);
+    if (share === null) return;
+    const n = Number(share.trim());
+    if (!Number.isInteger(n) || n < 0 || n > 100) return toast("百分比要填 0 到 100 的整数");
+    step("已保存，下一次发版起生效", () => rpc("mc_rollout", { p_app: app, p_share: n, p_first: first.split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean) })); });
   document.querySelectorAll("button[data-name]").forEach(b => b.onclick = () => {
     const v = prompt(`这台电脑（${b.dataset.name}）叫什么名字？例如 M3。留空 = 去掉名字。`, b.dataset.label);
     if (v !== null) act("名字已改", () => rpc("mc_name", { p_machine: b.dataset.name, p_label: v }));
