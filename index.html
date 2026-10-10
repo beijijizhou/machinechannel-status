@@ -74,6 +74,42 @@ const STATUS = { queued: ["等机器来取", "warn"], delivered: ["机器正在�
 const KIND = { machine: "机器", app: "项目", admin: "管理" };
 const TYPE = { dtf: "DTF 生产机", uv: "UV 生产机", "3d": "3D 生产机", shop: "店铺机", none: "非生产机" };
 let shown = null;   // a key that was just issued: shown until dismissed, it cannot be read again
+// The programs on a machine that can be asked how they are and be started or stopped through the
+// channel: what to send, and how to read "is it running" out of the program's own answer. The
+// channel still does not read messages; this is the owner's page knowing the programs the owner runs.
+// all: the buttons over the table that reach every machine at once.
+const SOFT = {
+  comfy: { name: "ComfyUI 生图", on: "开着", off: "关着", status: { do: "status" }, start: { do: "start" }, stop: { do: "stop" }, all: ["stop"],
+    running: r => !!r.running, warn: "它开着时占约 7 GB 显存；这台机器正在打印的话先别开。" },
+  logoguard: { name: "LogoGuard 检测", on: "检测中", off: "已停", status: { do: "status" }, start: { do: "start" }, stop: { do: "stop" }, all: [],
+    running: r => r.worker === "running", warn: "停了以后这台机器不再参与图片检测，直到再开。" },
+  automaticprint: { name: "AutomaticPrint 监控", on: "在运行", off: "没在运行", status: { do: "status" }, start: { do: "start_monitor" }, all: ["start"],
+    running: r => !!(r.monitor && r.monitor.running) || r.started === true || r.already_running === true },
+};
+let soft = {}, softAt = null, softBusy = "";   // soft[machine][app] = {running, error}: as last answered, read when asked - not with every ten seconds
+const answerOf = x => { try { const r = JSON.parse(x.reply); return x.status === "done" && r && r.ok !== false ? { running: SOFT[x.app].running(r) } : { error: (r && r.error) || x.reply || STATUS[x.status][0] }; }
+  catch (e) { return { error: x.reply || STATUS[x.status][0] }; } };
+// Sends, then looks for the answers a few times (a machine asks the channel within a minute) and stops looking.
+async function ask(what, sends, seconds) {
+  softBusy = what; refresh();
+  try {
+    const ids = (await Promise.all(sends.map(a => rpc("mc_send", { ...a, p_ttl_seconds: 180, p_sender: "状态页" })))).flat().map(x => x.id);
+    for (let waited = 0, open = ids; open.length && waited < seconds; waited += 6) {
+      await new Promise(r => setTimeout(r, 6000));
+      const rows = await rpc("mc_result", { p_ids: open });
+      for (const x of rows) if (SOFT[x.app] && ["done", "error", "expired"].includes(x.status)) (soft[x.machine] = soft[x.machine] || {})[x.app] = answerOf(x);
+      open = rows.filter(x => ["queued", "delivered"].includes(x.status)).map(x => x.id);
+    }
+    softAt = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  } catch (e) { toast(e.message); }
+  softBusy = ""; refresh();
+}
+const softPill = (m, a) => { const k = SOFT[a], st = (soft[m.machine] || {})[a], v = ((m.info || {}).versions || {})[a];
+  if (!k) return `<span class="pill info">${esc(a)}${v ? " " + esc(v) : ""}</span>`;
+  const btn = (act, text) => k[act] && m.online ? ` <button data-soft="${act}" data-app="${a}" data-machine="${esc(m.machine)}" data-label="${esc(m.label || m.machine)}">${text}</button>` : "";
+  return `<span style="white-space:nowrap"><span class="pill ${!st ? "info" : st.error ? "bad" : st.running ? "ok" : "warn"}" title="${esc(st && st.error || "")}">${esc(k.name)}${!st ? "" : st.error ? " 没答上来" : " " + (st.running ? k.on : k.off)}</span>${
+    !st || st.error ? "" : st.running ? btn("stop", "关") : btn("start", "开")}</span>`; };
+
 // Standing orders (an app's release) and how each app's next one starts out: read when the page
 // opens, after each step taken here and when asked - not with every ten seconds' reading.
 let orders = null, ordersAt = null;
@@ -135,7 +171,7 @@ function html(d) {
         <span class="pill ${m.kind ? "info" : "warn"}">${TYPE[m.kind] || "没分类型"}</span> <button data-kind="${esc(m.machine)}" data-now="${esc(m.kind || "")}" title="改这台机器的类型">类型</button></td>
       <td>${esc(m.machine)}</td><td>${m.online ? `<span class="pill ok">在线</span>` : `<span class="pill bad">离线</span> <span class="muted">${ago(m.seen_at)}</span>`}</td>
       <td>${esc(agentName(m))} ${!i.agent ? "" : cur ? `<span class="pill ok">最新</span>` : newest(m, latest) ? `<span class="pill warn">旧版本</span>` : ""}</td>
-      <td>${(i.apps || []).map(a => `<span class="pill info">${esc(a)}${(i.versions || {})[a] ? " " + esc(i.versions[a]) : ""}</span>`).join(" ") || `<span class="muted">没有登记程序</span>`}${(i.running || []).length ? ` <span class="muted">正在执行 ${esc(i.running.join("、"))}</span>` : ""}</td>
+      <td>${(i.apps || []).map(a => softPill(m, a)).join(" ") || `<span class="muted">没有登记程序</span>`}${(i.running || []).length ? ` <span class="muted">正在执行 ${esc(i.running.join("、"))}</span>` : ""}</td>
       <td>${m.key ? `<span class="pill ok">自己的钥匙</span> <span class="muted">${ago(m.key.last_used_at)}用过</span>` : `<span class="pill warn">还在用旧的共用钥匙</span>`}</td>
       <td>${i.cpu != null ? Math.round(i.cpu) + "%" : "–"}</td><td>${i.gpu != null ? `${Math.round(i.gpu)}% · ${(i.vram_mb / 1024).toFixed(1)}/${Math.round(i.vram_total_mb / 1024)} GB · ${Math.round(i.temp)}°C` : "–"}</td>
       <td>${num(m.today)}${m.waiting ? ` <span class="pill warn">${m.waiting} 条在等</span>` : ""}</td>
@@ -165,6 +201,10 @@ function html(d) {
     </div>
     <div class="panel"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">机器</h2><span class="muted">没事的机器每分钟报到一次，有指令时每 10 秒 · 名字是人叫的名字，发指令时名字和电脑名都认</span>
         <span style="flex:1"></span><button class="go" id="updateAll" ${behind.filter(m => m.online).length ? "" : "disabled"}>在线的旧版本机器全部更新通道程序</button></div>
+      <div class="row" style="margin-bottom:8px"><b>软件状态</b>
+        <button class="go" id="softRead" ${softBusy ? "disabled" : ""}>读取每台机器上软件的状态</button>
+        ${Object.entries(SOFT).flatMap(([a, k]) => k.all.map(act => `<button data-softall="${act}" data-app="${a}" ${softBusy ? "disabled" : ""}>${act === "stop" ? "全部关闭" : "全部启动"} ${esc(k.name)}</button>`)).join(" ")}
+        <span class="muted">${softBusy ? esc(softBusy) + "，等机器回答（最多一分多钟）…" : softAt ? `读取于 ${softAt} · 要最新的再点一次读取` : "还没读过：点“读取”后，每台机器的程序旁边会显示开着还是关着，并有开和关的按钮"}</span></div>
       <table><tr><th>名字</th><th>电脑名</th><th>状态</th><th>通道程序</th><th>登记的程序</th><th>钥匙</th><th>CPU</th><th>显卡</th><th>24 小时指令</th><th></th></tr>${ms.map(mRow).join("")}</table></div>
     ${releases(d)}
     <div class="panel"><h2>每一条指令 <span class="muted" style="font-weight:400">最近 ${d.messages.length} 条，最新的在前 · 内容和回答是各项目自己的，通道只是原样送达</span></h2>
@@ -226,6 +266,16 @@ function wire() {
   const step = async (label, fn, app) => { try { await fn(); const p = app ? await pushNow(app) : null;
       toast(label + (p && p.due ? `，已通知 ${p.sent} / ${p.due} 台马上来取` : "")); } catch (e) { toast(e.message); }
     await readOrders(); refresh(); };
+  const having = a => data.machines.filter(m => m.online && ((m.info || {}).apps || []).includes(a));
+  const sr = $("#softRead"); if (sr) sr.onclick = () => ask("正在读取软件状态",
+    Object.keys(SOFT).filter(a => having(a).length).map(a => ({ p_machine: "*", p_app: a, p_body: SOFT[a].status })), 90);
+  document.querySelectorAll("button[data-softall]").forEach(b => b.onclick = () => { const a = b.dataset.app, act = b.dataset.softall, k = SOFT[a], n = having(a).length;
+    if (!n) return toast(`现在没有在线的机器装着 ${k.name}`);
+    if (confirm(`${act === "stop" ? "关闭" : "启动"}全部 ${n} 台在线机器上的 ${k.name}？`))
+      ask(`正在${act === "stop" ? "关闭" : "启动"}全部 ${k.name}`, [{ p_machine: "*", p_app: a, p_body: k[act] }], 200); });
+  document.querySelectorAll("button[data-soft]").forEach(b => b.onclick = () => { const a = b.dataset.app, act = b.dataset.soft, k = SOFT[a];
+    if (confirm(`${act === "stop" ? "关闭" : "启动"} ${b.dataset.label} 上的 ${k.name}？${k.warn ? "\n" + k.warn : ""}`))
+      ask(`正在${act === "stop" ? "关闭" : "启动"} ${b.dataset.label} 的 ${k.name}`, [{ p_machine: b.dataset.machine, p_app: a, p_body: k[act] }], 200); });
   const again = $("#ordersNow"); if (again) again.onclick = () => step("已重新读取", async () => {});
   document.querySelectorAll("button[data-widen]").forEach(b => b.onclick = () => { const n = Number(b.dataset.share), app = b.dataset.widen;
     if (confirm(n ? `把 ${app} 现在公布的版本放到${n === 100 ? "全部机器" : " " + n + "% 的机器"}？已经领过的不会重领。` : `${app} 现在公布的版本先不再往下发？已经领到的机器不受影响，指定先发的机器仍会领。`))
