@@ -241,6 +241,8 @@ function html(d) {
       <table><tr><th>程序</th><th>指令</th><th>完成</th><th>出错</th><th>没被取走</th><th>在路上</th><th>装了它的机器</th><th>最近一次</th></tr>${d.apps.map(appRow).join("") || `<tr><td class="muted">暂无</td></tr>`}</table></div>
     ${usagePanel()}
     <div class="panel"><h2>钥匙 <span class="muted" style="font-weight:400">机器钥匙：只能替那一台机器报到和取指令 · 项目钥匙：只能给自己的程序发指令 · 管理钥匙：全部</span></h2>
+      <div class="issue"><b>给一台新的生产机装通道</b>：在那台电脑的命令提示符里运行这一行（每台都一样，里面没有钥匙；把 UV5 换成你叫它的名字），然后回到这里，最上面“需要你看一下”里点“批准”。
+        <div class="token" style="margin-top:8px">powershell -ExecutionPolicy Bypass -Command "iwr ${esc(site())}bootstrap.ps1 -UseBasicParsing -OutFile $env:TEMP\\mc-bootstrap.ps1; &amp; $env:TEMP\\mc-bootstrap.ps1 -Join UV5"</div></div>
       <div class="issue"><div class="row">
           <label class="field"><span>发哪一种</span><select id="newKind"><option value="app">项目钥匙（给一个程序的发送方）</option><option value="machine">机器钥匙（给一台电脑）</option><option value="admin">管理钥匙（给负责人）</option></select></label>
           <label class="field" data-for="app"><span>程序名（不是机器名）</span><select id="newApp">${programs.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("")}<option value="">别的程序（还没有机器登记）…</option></select></label>

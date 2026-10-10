@@ -2,15 +2,22 @@
 # check it, unpack it and run its installer. For a machine that has no other project's installer
 # to do this for it. Safe to run again (it updates).
 #
+#   powershell -ExecutionPolicy Bypass -File bootstrap.ps1 -Join UV5                (the same line for every machine: no key in it)
 #   powershell -ExecutionPolicy Bypass -File bootstrap.ps1 -Token mc_...            (a machine key of this computer)
 #   powershell -ExecutionPolicy Bypass -File bootstrap.ps1 -Token mc_... -Dir D:\MachineChannel
+#
+# -Join <what people call the machine>: the computer makes its own key and asks to join under its
+# computer name; nothing is installed until the owner approves the request on the status page
+# (the six-character code shown here is shown there too). The name given is only said to the
+# owner with the request: it is the owner who names the machine. No key is typed or copied.
 #
 # The machine key is issued on the channel's status page (kind "机器钥匙", name = this computer's
 # name, i.e. what `echo %COMPUTERNAME%` prints). It only lets this one machine report and take
 # its own messages. A machine without Python 3.10 or newer gets Python 3.12 first (winget).
 # The last line printed is one JSON object {"ok": true|false, ...}. Exit code 0 / 1.
 param(
-    [Parameter(Mandatory = $true)][string]$Token,
+    [string]$Token = "",
+    [string]$Join = "",
     [string]$Dir = "C:\MachineChannel",
     [string]$Python = "",
     [string]$TaskName = "MachineChannelAgent",
@@ -25,6 +32,40 @@ function Done([bool]$ok) { $report.ok = $ok; ($report | ConvertTo-Json -Compress
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    function Hex([byte[]]$b) { -join ($b | ForEach-Object { $_.ToString("x2") }) }
+    if (-not $Token -and -not $Join) { throw "say -Join <what people call this machine> (or -Token <a machine key the owner issued>)" }
+    if (-not $Token) {
+        # This computer's own key, made here. The channel is told its sha256 and keeps the request waiting.
+        $report.step = "ask to join"
+        $kept = Join-Path $Dir "var\channel.token"
+        if (Test-Path $kept) { $Token = [IO.File]::ReadAllText($kept).Trim() }   # asked before, or on the channel already: the same key
+        else {
+            $random = New-Object byte[] 32
+            [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($random)
+            $Token = "mc_" + (Hex $random)
+        }
+        $sha256 = Hex ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($Token)))
+        $ask = @{ p_sha256 = $sha256; p_machine = $env:COMPUTERNAME; p_kind = "none"; p_note = "asks to join as $($Join.Trim()) (from $env:USERNAME)" } | ConvertTo-Json -Compress
+        $waiting = $true
+        try {
+            $asked = Invoke-RestMethod -Method Post -Uri "$($Channel.url)/rest/v1/rpc/mc_join" -ContentType "application/json; charset=utf-8" `
+                -Headers @{ apikey = $Channel.key } -Body ([Text.Encoding]::UTF8.GetBytes($ask)) -TimeoutSec 60
+            New-Item -ItemType Directory -Force (Join-Path $Dir "var") | Out-Null
+            [IO.File]::WriteAllText($kept, $Token, (New-Object Text.UTF8Encoding $false))
+            Write-Host ""
+            Write-Host "Asked to join as '$env:COMPUTERNAME' ($($Join.Trim())).  Code: $($asked.code)" -ForegroundColor Yellow
+            Write-Host "Waiting for the owner to approve it on the status page (up to 20 minutes)..."
+        } catch {
+            if ("$($_.ErrorDetails.Message)" -notmatch "already on the channel") { throw "the channel did not take the request: $(if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message })" }
+            $waiting = $false   # this computer is on the channel with the key it has: go on to the install
+        }
+        $body = @{ p_token = $Token } | ConvertTo-Json -Compress
+        for ($i = 0; $waiting -and $i -lt 80; $i++) {   # only while someone is installing
+            try { $null = Invoke-RestMethod -Method Post -Uri "$($Channel.url)/rest/v1/rpc/mc_whoami" -ContentType "application/json" -Headers @{ apikey = $Channel.key } -Body $body -TimeoutSec 30; $waiting = $false }
+            catch { Start-Sleep -Seconds 15 }
+        }
+        if ($waiting) { throw "not approved within 20 minutes: run the same line again once the owner has approved it (the request stays)" }
+    }
     $report.step = "fetch"
     $body = @{ p_token = $Token.Trim() } | ConvertTo-Json -Compress
     try {
