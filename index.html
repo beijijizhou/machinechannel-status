@@ -110,6 +110,34 @@ const softPill = (m, a) => { const k = SOFT[a], st = (soft[m.machine] || {})[a],
   return `<span style="white-space:nowrap"><span class="pill ${!st ? "info" : st.error ? "bad" : st.running ? "ok" : "warn"}" title="${esc(st && st.error || "")}">${esc(k.name)}${!st ? "" : st.error ? " 没答上来" : " " + (st.running ? k.on : k.off)}</span>${
     !st || st.error ? "" : st.running ? btn("stop", "关") : btn("start", "开")}</span>`; };
 
+// What the Supabase projects have used (the channel's function mc-usage asks Supabase): read when the button is pressed, never on a timer.
+let usage = null, usageBusy = false;
+const size = b => b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB";
+function usagePanel() {
+  const u = usage, over = u && !u.error && u.month > u.included;
+  const rows = !u || u.error ? "" : u.projects.map(p => p.error ? `<tr><td><b>${esc(p.name)}</b></td><td colspan="4" class="muted">没读到：${esc(p.error)}</td></tr>` :
+    p.functions.map((f, i) => `<tr>${i ? "" : `<td rowspan="${p.functions.length}"><b>${esc(p.name)}</b><div class="muted">数据库 ${size(p.db_bytes)} · 文件 ${size(p.storage_bytes)}（${num(p.files)} 个）<br>数据库接口 ${num(p.rest)} 次 · 存储接口 ${num(p.storage_requests)} 次</div></td>`}
+      <td><span class="pill info">${esc(f.slug)}</span></td><td>${num(f.calls)}</td><td>${u.calls ? (f.calls / u.calls * 100).toFixed(f.calls / u.calls < 0.01 ? 1 : 0) + "%" : "–"}</td>
+      <td>${f.errors ? `<span class="pill bad">${num(f.errors)}</span>` : "0"}</td></tr>`).join("")).join("");
+  return `<div class="panel"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">Supabase 用量</h2>
+      <span class="muted">Edge Function 调用按 Supabase 自己的统计，最近 24 小时 · 点了才读（约 20 秒），不会自动刷新</span>
+      <span style="flex:1"></span><button class="go" id="usageRead" ${usageBusy ? "disabled" : ""}>${usageBusy ? "读取中…" : u ? "重新读取" : "读取用量"}</button></div>
+    ${!u ? `<span class="muted">还没读过</span>` : u.error ? `<span class="pill bad">没读到</span> ${esc(u.error)}` : `
+    <div style="margin-bottom:8px">最近 24 小时 Edge Function 共调用 <b>${num(u.calls)}</b> 次，照这样一个月约 <b>${num(u.month)}</b> 次，套餐含 ${num(u.included)} 次
+      <span class="pill ${over ? "bad" : u.month > u.included * 0.7 ? "warn" : "ok"}">${over ? `超出约 ${num(u.month - u.included)} 次` : "在含量内"}</span>
+      <span class="muted">· 读取于 ${when(u.at)} · 月数是按这一天推算的，套餐含量以账单为准</span></div>
+    <table><tr><th>项目</th><th>Edge Function</th><th>24 小时调用</th><th>占全部</th><th>服务端出错</th></tr>${rows}</table>`}</div>`;
+}
+async function readUsage() {
+  usageBusy = true; refresh();
+  try {
+    const r = await fetch(`${CHANNEL.url}/functions/v1/mc-usage`, { method: "POST", headers: { "Content-Type": "application/json", apikey: CHANNEL.key }, body: JSON.stringify({ p_token: token() }) });
+    const body = await r.json().catch(() => ({}));
+    usage = r.ok ? body : { error: { 403: "要用管理钥匙才能读用量", 503: "通道的用量函数还没有配置 Supabase 的管理令牌" }[r.status] || body.error || `请求失败（${r.status}）` };
+  } catch (e) { usage = { error: e.message }; }
+  usageBusy = false; refresh();
+}
+
 // Standing orders (an app's release) and how each app's next one starts out: read when the page
 // opens, after each step taken here and when asked - not with every ten seconds' reading.
 let orders = null, ordersAt = null;
@@ -211,6 +239,7 @@ function html(d) {
       ${d.messages.length ? `<table><tr><th>时间</th><th>机器</th><th>程序</th><th>内容</th><th>结果</th><th>用时</th><th>机器的回答</th><th>谁发的</th></tr>${d.messages.map(msgRow).join("")}</table>` : `<span class="muted">还没有指令</span>`}</div>
     <div class="panel"><h2>各项目用了多少 <span class="muted" style="font-weight:400">最近 7 天 · “channel”是通道自己的问一声和更新</span></h2>
       <table><tr><th>程序</th><th>指令</th><th>完成</th><th>出错</th><th>没被取走</th><th>在路上</th><th>装了它的机器</th><th>最近一次</th></tr>${d.apps.map(appRow).join("") || `<tr><td class="muted">暂无</td></tr>`}</table></div>
+    ${usagePanel()}
     <div class="panel"><h2>钥匙 <span class="muted" style="font-weight:400">机器钥匙：只能替那一台机器报到和取指令 · 项目钥匙：只能给自己的程序发指令 · 管理钥匙：全部</span></h2>
       <div class="issue"><div class="row">
           <label class="field"><span>发哪一种</span><select id="newKind"><option value="app">项目钥匙（给一个程序的发送方）</option><option value="machine">机器钥匙（给一台电脑）</option><option value="admin">管理钥匙（给负责人）</option></select></label>
@@ -276,6 +305,7 @@ function wire() {
   document.querySelectorAll("button[data-soft]").forEach(b => b.onclick = () => { const a = b.dataset.app, act = b.dataset.soft, k = SOFT[a];
     if (confirm(`${act === "stop" ? "关闭" : "启动"} ${b.dataset.label} 上的 ${k.name}？${k.warn ? "\n" + k.warn : ""}`))
       ask(`正在${act === "stop" ? "关闭" : "启动"} ${b.dataset.label} 的 ${k.name}`, [{ p_machine: b.dataset.machine, p_app: a, p_body: k[act] }], 200); });
+  const ur = $("#usageRead"); if (ur) ur.onclick = readUsage;
   const again = $("#ordersNow"); if (again) again.onclick = () => step("已重新读取", async () => {});
   document.querySelectorAll("button[data-widen]").forEach(b => b.onclick = () => { const n = Number(b.dataset.share), app = b.dataset.widen;
     if (confirm(n ? `把 ${app} 现在公布的版本放到${n === 100 ? "全部机器" : " " + n + "% 的机器"}？已经领过的不会重领。` : `${app} 现在公布的版本先不再往下发？已经领到的机器不受影响，指定先发的机器仍会领。`))
